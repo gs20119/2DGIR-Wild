@@ -290,7 +290,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
             gaussExtractor.reconstruction(scene.getTrainCameras())
             gaussExtractor.export_image(train_dir) 
 
-            #if gaussians.color_net_type in ["naive"]:
             logging.info(f"Rendering training set's intrinsic image [{len(scene.getTrainCameras())}]...")
             render_intrinsic(train_dir, scene.getTrainCameras(), gaussians, pipe, background)
                 

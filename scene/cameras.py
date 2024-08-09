@@ -29,6 +29,7 @@ class Camera(nn.Module):
         self.FoVy = FoVy
         self.image_name = image_name
         self.intrinsic_martix=intrinsic_martix
+        
         try:
             self.data_device = torch.device(data_device)
         except Exception as e:

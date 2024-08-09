@@ -4,7 +4,6 @@ from argparse import ArgumentParser, Namespace
 import sys
 import os
 
-
 def argument_init(args):
 
     args.map_num=args.map_num
@@ -22,12 +21,11 @@ def argument_init(args):
     args.features_dim=args.feature_maps_dim*args.map_num
     args.features_weight_loss_coef=0.01
     args.color_net_params={
-        "fin_dim":48, "pin_dim":3, "view_dim":3,
+        "fin_dim":5, "pin_dim":3, "view_dim":3, # 5 = base(3)+rough(1)+metal(1)
         "pfin_dim":args.features_dim,
         "en_dims":[128,96,64],
         "de_dims":[48,48],
         "multires":[10,0],
-        "pre_compc":args.use_colors_precomp,
         "cde_dims":[48],
         "use_pencoding":[True,False], #postion viewdir
         "weight_norm":False,

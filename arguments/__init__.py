@@ -57,7 +57,6 @@ class ModelParams(ParamGroup):
         self.eval = False
         
         self.scene_name="brandenburg"
-        self.use_colors_precomp=True#True
         self.use_decode_with_pos=False
         
         self.use_indep_mask_branch=False

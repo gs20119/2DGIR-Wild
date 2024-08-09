@@ -18,10 +18,10 @@ from utils.point_utils import depth_to_normal
 import numpy as np
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,\
-    other_viewpoint_camera=None, store_cache=False, use_cache=False, point_features=None):
+    other_viewpoint_camera=None, store_cache=False, use_cache=False, 
+    is_training=False, dict_params=None, point_features=None):
     """
     Render the scene. 
-    
     Background tensor (bg_color) must be on GPU!
     """
     if other_viewpoint_camera is not None: #render using other camera center
@@ -44,7 +44,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -59,12 +58,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         prefiltered=False,
         debug=pipe.debug
     )
-
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz_dealed            #
-    means2D = screenspace_points    #[Npoint,3]
-    opacity = pc.get_opacity_dealed       #[Npoint,1]  
+    means3D = pc.get_xyz              
+    means2D = screenspace_points      #[Npoint,3]
+    opacity = pc.get_opacity          #[Npoint,1]  
 
     # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
     # scaling / rotation by the rasterizer.
@@ -72,8 +70,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rotations = None
     cov3D_precomp = None
     if pipe.compute_cov3D_python:
-        # cov3D_precomp = pc.get_covariance(scaling_modifier)
-        # currently don't support normal consistency loss if use precomputed covariance
         splat2world = pc.get_covariance(scaling_modifier)
         W, H = viewpoint_camera.image_width, viewpoint_camera.image_height
         near, far = viewpoint_camera.znear, viewpoint_camera.zfar
@@ -86,34 +82,29 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         cov3D_precomp = (splat2world[:, [0,1,3]] @ world2pix[:,[0,1,3]]).permute(0,2,1).reshape(-1, 9) # column major
     else:
         scales = pc.get_scaling        #[Npoint,2] 
-        rotations = pc.get_rotation   #[Npoint,4]   
-
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-    shs = None
-    colors_precomp = None
-    if not pipe.convert_SHs_python and pc.use_colors_precomp:
-        override_color=pc.get_colors
-    if override_color is None:
-        if pipe.convert_SHs_python:
-            shs_view = pc.get_features_dealed.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)     #N,3,16  
-            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))   #N,3  
-            dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
-            #dir_pp_normalized = pc.view_direction
-            sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)      
-            colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)          
-        else:
-            shs = pc.get_features_dealed
-    else:
-        colors_precomp = override_color
+        rotations = pc.get_rotation    #[Npoint,4]   
         
+    base_color = pc.get_base_color
+    roughness = pc.get_roughness
+    metallic = pc.get_metallic
+    normal = pc.get_normal
+    incidents = pc.get_incidents  # incident rgb - color net TODO
+    viewdirs = F.normalize(viewpoint_camera.camera_center - means3D, dim=-1)
+
+    dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_shs.shape[0], 1))
+    dir_pp_normalized = F.normalize(dir_pp, dim=-1)
+
+    brdf_colors, extra_results = rendering_equation(
+        base_color, roughness, normal.detach(), viewdirs, incidents,
+        incident_dirs_precompute=pc._incident_dirs, 
+        incident_areas_precompute=pc._incident_areas)
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii, allmap = rasterizer(
         means3D = means3D,       # [Npoint,3]
         means2D = means2D,      #[Npoint,3]
         shs = shs,              #[Npoint,16,3]
-        colors_precomp = colors_precomp,
+        colors_precomp = brdf_colors,
         opacities = opacity,     #[Npoint,1]  
         scales = scales,            #[Npoint,3] 
         rotations = rotations,      #[Npoint,4]    
@@ -124,9 +115,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rets = {"render": rendered_image,
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,
-            "radii": radii,}        
+            "radii": radii}        
     
-
     # 2DGS renderer part (additional)
     # additional regularizations
     render_alpha = allmap[1:2]
@@ -160,14 +150,66 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * (render_alpha).detach()
 
-
     rets.update({
-            'rend_alpha': render_alpha,
-            'rend_normal': render_normal,
-            'rend_dist': render_dist,
-            'surf_depth': surf_depth,
-            'surf_normal': surf_normal,
+        'rend_alpha': render_alpha,
+        'rend_normal': render_normal,
+        'rend_dist': render_dist,
+        'surf_depth': surf_depth,
+        'surf_normal': surf_normal,
     })
 
     return rets
 
+
+
+def rendering_equation(base_color, roughness, normals, viewdirs,
+                              incident_lights, incident_dirs_precompute=None, incident_areas_precompute=None): # TODO
+    incident_dirs, incident_areas = incident_dirs_precompute, incident_areas_precompute
+
+    n_d_i = (normals[:, None] * incident_dirs).sum(-1, keepdim=True).clamp(min=0)
+    f_d = base_color[:, None] / np.pi
+    f_s = GGX_specular(normals, viewdirs, incident_dirs, roughness, fresnel=0.04)
+
+    transport = incident_lights * incident_areas * n_d_i  # （num_pts, num_sample, 3)
+    specular = ((f_s)*transport).mean(dim=-2)
+    pbr = ((f_d+f_s)*transport).mean(dim=-2)
+    diffuse_light = transport.mean(dim=-2)
+
+    extra_results = {
+        "incident_dirs": incident_dirs,
+        "incident_lights": incident_lights,
+        "diffuse_light": diffuse_light,
+        "specular": specular,
+    }
+
+    return pbr, extra_results
+
+
+def GGX_specular(normal, pts2c, pts2l, roughness, fresnel):
+    L = F.normalize(pts2l, dim=-1)  # [nrays, nlights, 3]
+    V = F.normalize(pts2c, dim=-1)  # [nrays, 3]
+    H = F.normalize((L + V[:, None, :]) / 2.0, dim=-1)  # [nrays, nlights, 3]
+    N = F.normalize(normal, dim=-1)  # [nrays, 3]
+
+    NoV = torch.sum(V * N, dim=-1, keepdim=True)  # [nrays, 1]
+    N = N * NoV.sign()  # [nrays, 3]
+
+    NoL = torch.sum(N[:, None, :] * L, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1] TODO check broadcast
+    NoV = torch.sum(N * V, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, 1]
+    NoH = torch.sum(N[:, None, :] * H, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1]
+    VoH = torch.sum(V[:, None, :] * H, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1]
+
+    alpha = roughness * roughness  # [nrays, 3]
+    alpha2 = alpha * alpha  # [nrays, 3]
+    k = (alpha + 2 * roughness + 1.0) / 8.0
+    FMi = ((-5.55473) * VoH - 6.98316) * VoH
+    frac0 = fresnel + (1 - fresnel) * torch.pow(2.0, FMi)  # [nrays, nlights, 3]
+    
+    frac = frac0 * alpha2[:, None, :]  # [nrays, 1]
+    nom0 = NoH * NoH * (alpha2[:, None, :] - 1) + 1
+
+    nom1 = NoV * (1 - k) + k
+    nom2 = NoL * (1 - k[:, None, :]) + k[:, None, :]
+    nom = (4 * np.pi * nom0 * nom0 * nom1[:, None, :] * nom2).clamp_(1e-6, 4 * np.pi)
+    spec = frac / nom
+    return spec
