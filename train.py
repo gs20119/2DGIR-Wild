@@ -110,17 +110,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
     if args.warm_up_iter>0: 
         gaussians.set_learning_rate("box_coord",0.0) 
     
-    #from torch import autograd
-    #with autograd.detect_anomaly():
-    # start training
-    for iteration in range(first_iter, opt.iterations + 1):  
 
+    for iteration in range(first_iter, opt.iterations + 1):  
         iter_start.record()
         gaussians.update_learning_rate(iteration, args.warm_up_iter) 
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
+        # if iteration % 1000 == 0:
+        #    gaussians.oneupSHdegree()
 
         # Pick a random Camera
         if not viewpoint_stack:
@@ -131,7 +128,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         if (iteration-1) == debug_from: pipe.debug = True
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)     
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, is_training=True)     
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         gt_image = viewpoint_cam.original_image.cuda()
 
@@ -181,9 +178,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log 
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
 
-            if iteration%1000==0 or iteration==1:
+            if (iteration%1000==0) or (iteration==1):
+                print("Saving temporary images")
                 torchvision.utils.save_image(image, os.path.join(render_temp_path, f"iter{iteration}_"+viewpoint_cam.image_name + ".png"))
                 torchvision.utils.save_image(gt_image, os.path.join(gt_temp_path, f"iter{iteration}_"+viewpoint_cam.image_name + ".png"))
+                print("Saving Complete.")
                 if args.use_features_mask:
                     torchvision.utils.save_image(gaussians.features_mask.repeat(1,3,1,1), os.path.join(render_temp_mask_path, f"iter{iteration}_"+viewpoint_cam.image_name + ".png"))
             
@@ -229,7 +228,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
                     custom_cam, do_training, pipe.convert_SHs_python, pipe.compute_cov3D_python, keep_alive, scaling_modifer = network_gui.receive()
                     if custom_cam != None:
                         render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)
-                        net_image = render_pkg["render"] # TODO render_net_image()
+                        net_image = render_pkg["render"] 
                         net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                     metrics_dict = {
                         "#": gaussians.get_opacity.shape[0],

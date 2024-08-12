@@ -51,7 +51,7 @@ class ModelParams(ParamGroup):
         self._source_path = ""
         self._model_path = ""
         self._images = "images"
-        self._resolution = 1 #-1
+        self._resolution = 2 # -1
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
@@ -60,13 +60,13 @@ class ModelParams(ParamGroup):
         self.use_decode_with_pos=False
         
         self.use_indep_mask_branch=False
-        self.data_perturb=[] #for lego ["color","occ"]
+        self.data_perturb=[] # for lego ["color","occ"]
         
         self.use_features_mask=True
         if self.use_features_mask:
             self.features_mask_loss_coef=0.15
             self.features_mask_iters=2500
-        self.map_num=1+2 
+        self.map_num=1+2 # 1 projection map + k additional maps
 
         self.use_scaling_loss=False    
         self.use_lpips_loss=True
@@ -84,7 +84,8 @@ class PipelineParams(ParamGroup):
     def __init__(self, parser):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
-        self.depth_ratio = 0.0
+        self.sampling_ray_num = 24
+        self.depth_ratio = 1.0 # 1.0 (bounded) / 0.0 (unbounded)
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
 
@@ -92,10 +93,10 @@ class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
         self.position_lr_init = 0.00016
-        self.position_lr_final = 0.0000016*0.1
+        self.position_lr_final = 0.00000016
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
-        self.feature_lr = 0.0025
+        self.feature_lr = 0.01
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
@@ -106,7 +107,7 @@ class OptimizationParams(ParamGroup):
         
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2        
-        self.lambda_dist = 1000 # in paper, 100~1000
+        self.lambda_dist = 1000 # 100(unbounded) ~ 1000(bounded)
         self.lambda_normal = 0.05
         self.densification_interval = 100
         self.opacity_reset_interval = 3000

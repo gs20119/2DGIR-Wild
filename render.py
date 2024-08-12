@@ -29,6 +29,7 @@ from utils.render_utils import generate_path, create_videos
 import open3d as o3d
 
 
+@torch.no_grad()
 def render_interpolate(path, views, gaussians, pipeline, background): # select small portion of views
     inter_path = os.path.join(path, "intrinsic_dynamic_interpolate")
     makedirs(inter_path, exist_ok=True)
@@ -40,6 +41,7 @@ def render_interpolate(path, views, gaussians, pipeline, background): # select s
             torchvision.utils.save_image(rendering, os.path.join(inter_path, f"{idx}_{inter_weight:.2f}.png"))
     gaussians.colornet_inter_weight=1.0
 
+@torch.no_grad()
 def render_multiview(path, views, gaussians, pipeline, background): # select small portion of views
     origin_views = copy.deepcopy(views)
     multiview_path = os.path.join(path, "multiview")
@@ -50,16 +52,17 @@ def render_multiview(path, views, gaussians, pipeline, background): # select sma
             rendering = render(view, gaussians, pipeline, background, other_viewpoint_camera=o_view)["render"]
             torchvision.utils.save_image(rendering, os.path.join(sub_multiview_path, f"{idx}_{o_idx}" + ".png"))
 
+@torch.no_grad()
 def render_intrinsic(path, views, gaussians, pipeline, background):
-    intrinsic_path = os.path.join(path, "render_intrinsic")
-    makedirs(intrinsic_path, exist_ok=True)
-    gaussians.colornet_inter_weight=0.0
-    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        rendering = render(view, gaussians, pipeline, background)["render"]       
-        torchvision.utils.save_image(rendering, os.path.join(intrinsic_path, '{0:05d}'.format(idx) + ".png"))
-    gaussians.colornet_inter_weight=1.0
+    for attr in ['base', 'rough', 'metal']:
+        intrinsic_path = os.path.join(path, "render_"+attr)
+        makedirs(intrinsic_path, exist_ok=True)
+        for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+            rendering = render(view, gaussians, pipeline, background, render_type=attr)["render"]       
+            torchvision.utils.save_image(rendering, os.path.join(intrinsic_path, '{0:05d}'.format(idx) + ".png"))
 
 
+@torch.no_grad()
 def test_rendering_speed(views, gaussians, pipeline,background,use_cache=False): # don't use
     views=copy.deepcopy(views)
     length=min(1000,len(views))
@@ -84,7 +87,6 @@ def test_rendering_speed(views, gaussians, pipeline,background,use_cache=False):
         rendering = render(views[0], gaussians, pipeline, background,store_cache=True)["render"]
         start_time=time.time()
         rendering = render(view, gaussians, pipeline, background,store_cache=True)["render"]
-        #for idx, view in enumerate(tqdm(views[1:], desc="Rendering progress")):
         for idx in tqdm(range(length), desc="Rendering progress"):
             view=views[idx+1]
             rendering = render(view, gaussians, pipeline, background,use_cache=True)["render"]       
@@ -106,7 +108,6 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--render_interpolate", action="store_true",default=False)
     parser.add_argument("--render_multiview_video", action="store_true",default=False)
-    #parser.add_argument("--data_perturb", nargs="+", type=str, default=[]) #for lego ["color","occ"]
     parser.add_argument("--voxel_size", default=-1.0, type=float, help='Mesh: voxel size for TSDF') # From 2DGS
     parser.add_argument("--depth_trunc", default=-1.0, type=float, help='Mesh: Max depth range for TSDF')
     parser.add_argument("--sdf_trunc", default=-1.0, type=float, help='Mesh: truncation value for TSDF')
@@ -156,9 +157,8 @@ if __name__ == "__main__":
         print("export mesh ...")
         os.makedirs(train_dir, exist_ok=True)
         # export only diffuse texture
-        # gaussExtractor.gaussians.active_sh_degree = 0
-        gaussExtractor.gaussians.colornet_inter_weight = 0.0
-        gaussExtractor.reconstruction(scene.getTrainCameras())
+        #gaussExtractor.gaussians.colornet_inter_weight = 0.0
+        gaussExtractor.reconstruction(scene.getTrainCameras(), render_type='base')
 
         # extract the mesh and save
         if args.unbounded:
@@ -171,7 +171,7 @@ if __name__ == "__main__":
             sdf_trunc = 5.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
             mesh = gaussExtractor.extract_mesh_bounded(voxel_size=voxel_size, sdf_trunc=sdf_trunc, depth_trunc=depth_trunc)
         
-        gaussExtractor.gaussians.colornet_inter_weight = 1.0
+        #gaussExtractor.gaussians.colornet_inter_weight = 1.0
         o3d.io.write_triangle_mesh(os.path.join(train_dir, name), mesh)
         print("mesh saved at {}".format(os.path.join(train_dir, name)))
         

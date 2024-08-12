@@ -14,7 +14,7 @@ import math
 import numpy as np
 import torch.nn.functional as F
 from typing import NamedTuple
-from sh_utils import rotation_between_z
+from .sh_utils import rotation_between_z
 
 
 class BasicPointCloud(NamedTuple):

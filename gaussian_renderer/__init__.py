@@ -15,11 +15,12 @@ from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRas
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from utils.point_utils import depth_to_normal
+from utils.graphics_utils import fibonacci_sphere_sampling
+import torch.nn.functional as F
 import numpy as np
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None,\
-    other_viewpoint_camera=None, store_cache=False, use_cache=False, 
-    is_training=False, dict_params=None, point_features=None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
+        scaling_modifier = 1.0, other_viewpoint_camera=None, is_training=False, render_type='brdf'):
     """
     Render the scene. 
     Background tensor (bg_color) must be on GPU!
@@ -27,16 +28,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     if other_viewpoint_camera is not None: #render using other camera center
         viewpoint_camera.camera_center=other_viewpoint_camera.camera_center
     
-    if use_cache: pc.forward_cache(viewpoint_camera)
-    elif point_features is not None: pc.forward_interpolate(viewpoint_camera,point_features)
-    else: pc.forward(viewpoint_camera,store_cache)
-
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0     #[Npoint,3]
-    try: 
-        screenspace_points.retain_grad()
-    except: 
-        pass 
+    try: screenspace_points.retain_grad()
+    except: pass 
     
     if other_viewpoint_camera is not None: #render using other camera center
         viewpoint_camera=other_viewpoint_camera
@@ -83,31 +78,36 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     else:
         scales = pc.get_scaling        #[Npoint,2] 
         rotations = pc.get_rotation    #[Npoint,4]   
-        
+
+    # we will use rgb color from rendering_equation without shs
     base_color = pc.get_base_color
     roughness = pc.get_roughness
     metallic = pc.get_metallic
-    normal = pc.get_normal
-    incidents = pc.get_incidents  # incident rgb - color net TODO
-    viewdirs = F.normalize(viewpoint_camera.camera_center - means3D, dim=-1)
+    normal = pc.get_normal.detach() # [N,3] (why do we need detach here? TODO)
+    view = pc.get_viewdirs(viewpoint_camera).detach() # outgoing light [N,3]
+    nov = torch.sum(normal*view, dim=-1, keepdim=True)
+    normal *= nov.sign() # align normal with view_dirs
 
-    dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_shs.shape[0], 1))
-    dir_pp_normalized = F.normalize(dir_pp, dim=-1)
+    sample_num = pipe.sampling_ray_num # S
+    incident_dirs, incident_areas = sample_incident_rays(normal, is_training, sample_num) # incident lights [N,S,3], [N,S,1]
+    incidents = pc.get_incidents(viewpoint_camera, incident_dirs)  # incident rgb color from color net. [N,S,3]
 
-    brdf_colors, extra_results = rendering_equation(
-        base_color, roughness, normal.detach(), viewdirs, incidents,
-        incident_dirs_precompute=pc._incident_dirs, 
-        incident_areas_precompute=pc._incident_areas)
+    brdf_color, extra_results = rendering_equation(
+        base_color, roughness, metallic, normal, view, 
+        incidents, incident_dirs, incident_areas)
+    if render_type=='base': brdf_color = base_color.detach() # for rendering intrinsics, not for training
+    elif render_type=='rough': brdf_color = torch.cat([roughness for _ in range(3)], dim=-1)
+    elif render_type=='metal': brdf_color = torch.cat([metallic for _ in range(3)], dim=-1)
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii, allmap = rasterizer(
-        means3D = means3D,       # [Npoint,3]
-        means2D = means2D,      #[Npoint,3]
-        shs = shs,              #[Npoint,16,3]
-        colors_precomp = brdf_colors,
-        opacities = opacity,     #[Npoint,1]  
-        scales = scales,            #[Npoint,3] 
-        rotations = rotations,      #[Npoint,4]    
+        means3D = means3D,            # [N,3]
+        means2D = means2D,            # [N,3]
+        shs = None,                   # [N,16,3], not used
+        colors_precomp = brdf_color, # [N,3]
+        opacities = opacity,          # [N,1]  
+        scales = scales,              # [N,2] 
+        rotations = rotations,        # [N,4] (quarternion)    
         cov3D_precomp = cov3D_precomp)
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
@@ -115,7 +115,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rets = {"render": rendered_image,
             "viewspace_points": means2D,
             "visibility_filter" : radii > 0,
-            "radii": radii}        
+            "radii": radii}       
+    rets.update(extra_results) 
     
     # 2DGS renderer part (additional)
     # additional regularizations
@@ -161,16 +162,20 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     return rets
 
 
+# From Relightable 3DGS
+def sample_incident_rays(normals, is_training=False, sample_num=24): 
+    incident_dirs, incident_areas = fibonacci_sphere_sampling(normals, sample_num, random_rotate=is_training) # random_rotate - why?
+    return incident_dirs, incident_areas  # [N,S,3], [N,S,1]
 
-def rendering_equation(base_color, roughness, normals, viewdirs,
-                              incident_lights, incident_dirs_precompute=None, incident_areas_precompute=None): # TODO
-    incident_dirs, incident_areas = incident_dirs_precompute, incident_areas_precompute
 
-    n_d_i = (normals[:, None] * incident_dirs).sum(-1, keepdim=True).clamp(min=0)
-    f_d = base_color[:, None] / np.pi
-    f_s = GGX_specular(normals, viewdirs, incident_dirs, roughness, fresnel=0.04)
+def rendering_equation(base_color, roughness, metallic, normals, 
+            viewdirs, incident_lights, incident_dirs, incident_areas): 
 
-    transport = incident_lights * incident_areas * n_d_i  # （num_pts, num_sample, 3)
+    n_d_i = (normals[:, None, :] * incident_dirs).sum(-1, keepdim=True).clamp(min=0) 
+    f_d = (1 - metallic[:, None, :]) * base_color[:, None, :] / np.pi
+    f_s = GGX_specular(normals, viewdirs, incident_dirs, base_color, roughness, metallic)
+
+    transport = incident_lights * incident_areas * n_d_i  # [num_pts, num_sample, 3]
     specular = ((f_s)*transport).mean(dim=-2)
     pbr = ((f_d+f_s)*transport).mean(dim=-2)
     diffuse_light = transport.mean(dim=-2)
@@ -185,31 +190,32 @@ def rendering_equation(base_color, roughness, normals, viewdirs,
     return pbr, extra_results
 
 
-def GGX_specular(normal, pts2c, pts2l, roughness, fresnel):
+def GGX_specular(normal, pts2c, pts2l, base_color, roughness, metallic): # Unreal Engine
     L = F.normalize(pts2l, dim=-1)  # [nrays, nlights, 3]
     V = F.normalize(pts2c, dim=-1)  # [nrays, 3]
     H = F.normalize((L + V[:, None, :]) / 2.0, dim=-1)  # [nrays, nlights, 3]
     N = F.normalize(normal, dim=-1)  # [nrays, 3]
 
-    NoV = torch.sum(V * N, dim=-1, keepdim=True)  # [nrays, 1]
-    N = N * NoV.sign()  # [nrays, 3]
-
-    NoL = torch.sum(N[:, None, :] * L, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1] TODO check broadcast
-    NoV = torch.sum(N * V, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, 1]
+    NoL = torch.sum(N[:, None, :] * L, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1] 
+    NoV = torch.sum(N * V, dim=-1, keepdim=True).clamp_(1e-6, 1)              # [nrays, 1]
     NoH = torch.sum(N[:, None, :] * H, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1]
     VoH = torch.sum(V[:, None, :] * H, dim=-1, keepdim=True).clamp_(1e-6, 1)  # [nrays, nlights, 1]
 
-    alpha = roughness * roughness  # [nrays, 3]
-    alpha2 = alpha * alpha  # [nrays, 3]
-    k = (alpha + 2 * roughness + 1.0) / 8.0
-    FMi = ((-5.55473) * VoH - 6.98316) * VoH
-    frac0 = fresnel + (1 - fresnel) * torch.pow(2.0, FMi)  # [nrays, nlights, 3]
-    
-    frac = frac0 * alpha2[:, None, :]  # [nrays, 1]
+    # D: Trowbridge-Reitz GGX
+    alpha = roughness * roughness  # or roughness
+    alpha2 = alpha * alpha  
     nom0 = NoH * NoH * (alpha2[:, None, :] - 1) + 1
+    D = alpha2[:, None, :] / (np.pi * nom0 * nom0) 
 
-    nom1 = NoV * (1 - k) + k
-    nom2 = NoL * (1 - k[:, None, :]) + k[:, None, :]
-    nom = (4 * np.pi * nom0 * nom0 * nom1[:, None, :] * nom2).clamp_(1e-6, 4 * np.pi)
-    spec = frac / nom
+    # F: Fresnel-Schlick approximation
+    F0 = 0.04 * (1-metallic) + metallic * base_color # [nrays, 3]
+    Fr = F0[:, None, :] + (1 - F0[:, None, :]) * torch.pow(1 - VoH, 5.0)
+
+    # G: Smith's joint approximation
+    k = alpha[:, None, :] # or (alpha + 2 * roughness + 1.0) / 8.0
+    nom1 = NoV[:, None, :] * (1 - k) + k
+    nom2 = NoL * (1 - k) + k
+    G = 0.5 / (NoL * nom1 + NoV[:, None, :] * nom2)
+
+    spec = D * Fr * G / (4.0 * NoV[:, None, :] * NoL)
     return spec
