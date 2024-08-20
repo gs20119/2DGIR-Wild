@@ -49,10 +49,10 @@ class Color_net(nn.Module):
         
         self.color_decoder=lin_module(
             fin_dim+view_dim, 3, cde_dims, multires[0],
-            act_fun=nn.ReLU(),weight_norm=weight_norm,weight_xavier=weight_xavier)
+            act_fun=nn.ReLU(), last_act_fun=nn.Sigmoid(), # apply sigmoid at last
+            weight_norm=weight_norm, weight_xavier=weight_xavier)
         
         self.use_drop_out=use_drop_out
-        
         if use_drop_out:
             self.drop_outs=[nn.Dropout(0.1)]
 
@@ -79,13 +79,14 @@ class Color_net(nn.Module):
         return outc
 
 
-    def forward_cache(self, direction):
+    def forward_cache(self, direction, num_samples=1):
         # repeat forward using same outd (=same features, different angles)
         if self.use_pencoding[1]:
             direction = self.embed_fns[1](direction)
-        outd = self.cache_outd
-        outc = self.color_decoder(torch.cat([outd,direction],dim=1)) 
-        return outc
+        outd = self.cache_outd # [N,d]
+        outd_ = outd[:,None,:].repeat(1,num_samples,1).reshape(-1,outd.shape[-1]) # [NS,d]
+        outc = self.color_decoder(torch.cat([outd_,direction],dim=1)) 
+        return outc # [NS,3]
         
 
     

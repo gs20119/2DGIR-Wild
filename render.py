@@ -55,10 +55,10 @@ def render_multiview(path, views, gaussians, pipeline, background): # select sma
 @torch.no_grad()
 def render_intrinsic(path, views, gaussians, pipeline, background):
     for attr in ['base', 'rough', 'metal']:
-        intrinsic_path = os.path.join(path, "render_"+attr)
+        intrinsic_path = os.path.join(path, attr)
         makedirs(intrinsic_path, exist_ok=True)
         for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-            rendering = render(view, gaussians, pipeline, background, render_type=attr)["render"]       
+            rendering = render(view, gaussians, pipeline, background)["render_"+attr]       
             torchvision.utils.save_image(rendering, os.path.join(intrinsic_path, '{0:05d}'.format(idx) + ".png"))
 
 
@@ -158,7 +158,7 @@ if __name__ == "__main__":
         os.makedirs(train_dir, exist_ok=True)
         # export only diffuse texture
         #gaussExtractor.gaussians.colornet_inter_weight = 0.0
-        gaussExtractor.reconstruction(scene.getTrainCameras(), render_type='base')
+        gaussExtractor.reconstruction(scene.getTrainCameras())
 
         # extract the mesh and save
         if args.unbounded:

@@ -26,7 +26,7 @@ def argument_init(args):
         "en_dims":[64,48,32], # reduced size of MLP 
         "de_dims":[24,24],
         "multires":[10,0],
-        "cde_dims":[48],
+        "cde_dims":[24,24], # need more details [48] -> [16,16]
         "use_pencoding":[True,False], # encode postion, viewdir
         "weight_norm":False,
         "weight_xavier":True,

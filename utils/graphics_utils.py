@@ -82,31 +82,50 @@ def focal2fov(focal, pixels):
 
 # From Relightable-3DGS
 def fibonacci_sphere_sampling(normals, sample_num, random_rotate=True):
-    pre_shape = normals.shape[:-1]
+    pre_shape = normals.shape[:-1] # N
     if len(pre_shape) > 1:
-        normals = normals.reshape(-1, 3)
+        normals = normals.reshape(-1, 3) # [N,3]
     delta = np.pi * (3.0 - np.sqrt(5.0))
 
     # fibonacci sphere sample around z axis
-    idx = torch.arange(sample_num, dtype=torch.float, device='cuda')[None]
-    z = (1 - 2 * idx / (2 * sample_num - 1)).clamp_min(np.sin(10/180*np.pi))
+    idx = torch.arange(sample_num, dtype=torch.float, device='cuda')[None] # [1,S]
+    z = (1 - 2 * idx / (2 * sample_num - 1)).clamp_min(np.sin(10/180*np.pi)) # [1,S]
     rad = torch.sqrt(1 - z ** 2)
     theta = delta * idx
     if random_rotate:
-        theta = torch.rand(*pre_shape, 1, device='cuda') * 2 * np.pi + theta
-    y = torch.cos(theta) * rad
-    x = torch.sin(theta) * rad
-    z_samples = torch.stack([x, y, z.expand_as(y)], dim=-2)
+        theta = torch.rand(*pre_shape, 1, device='cuda') * 2 * np.pi + theta # [N,S]
+    y = torch.cos(theta) * rad # [N,S]
+    x = torch.sin(theta) * rad # [N,S]
+    z_samples = torch.stack([x, y, z.expand_as(y)], dim=-2) # [N,3,S]
 
-    # rotate to normal
-    # z_vector = torch.zeros_like(normals)
-    # z_vector[..., 2] = 1  # [H, W, 3]
-    # rotation_matrix = rotation_between_vectors(z_vector, normals)
-    rotation_matrix = rotation_between_z(normals)
-    incident_dirs = rotation_matrix @ z_samples
-    incident_dirs = F.normalize(incident_dirs, dim=-2).transpose(-1, -2)
+    rotation_matrix = rotation_between_z(normals) # [N,3,3]
+    incident_dirs = rotation_matrix @ z_samples # [N,3,S]
+    incident_dirs = F.normalize(incident_dirs, dim=-2).transpose(-1, -2) # [N,S,3]
     incident_areas = torch.ones_like(incident_dirs)[..., 0:1] * 2 * np.pi
     if len(pre_shape) > 1:
         incident_dirs = incident_dirs.reshape(*pre_shape, sample_num, 3)
         incident_areas = incident_areas.reshape(*pre_shape, sample_num, 1)
     return incident_dirs, incident_areas
+
+# (S1=res/4 x S2=res) spherical coordinate sampling
+def full_hemisphere_sampling(normals, res=100): 
+    pre_shape = normals.shape[:-1] # N
+    if len(pre_shape) > 1:
+        normals = normals.reshape(-1, 3) # [N,3]
+
+    phi_ = torch.tensor(np.linspace(0.0,0.5*np.pi,res//4), dtype=torch.float, device='cuda') # [S1]
+    theta_ = torch.tensor(np.linspace(0.0,2.0*np.pi,res), dtype=torch.float, device='cuda') # [S2]
+    phi, theta = torch.meshgrid(phi_, theta_, indexing='ij') # [S1,S2]
+    x = torch.sin(theta) * torch.cos(phi)
+    y = torch.cos(theta) * torch.cos(phi)
+    z = torch.sin(phi)
+    samples_ = torch.stack([x, y, z], dim=0).flatten(start_dim=-2)[None] # [1,3,S1*S2]
+    samples = samples_.expand(normals.shape[0],-1,-1) # [N,3,S1*S2]
+
+    rotation_matrix = rotation_between_z(normals) # [N,3,3]
+    incident_dirs = rotation_matrix @ samples # [N,3,S1*S2]
+    incident_dirs = F.normalize(incident_dirs, dim=-2).transpose(-1, -2) # [N,S1*S2,3]
+    
+    if len(pre_shape) > 1:
+        incident_dirs = incident_dirs.reshape(*pre_shape, sample_num, 3)
+    return incident_dirs

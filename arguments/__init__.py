@@ -62,7 +62,7 @@ class ModelParams(ParamGroup):
         self.use_indep_mask_branch=False
         self.data_perturb=[] # for lego ["color","occ"]
         
-        self.use_features_mask=True
+        self.use_features_mask=False # use visibility map
         if self.use_features_mask:
             self.features_mask_loss_coef=0.15
             self.features_mask_iters=2500
@@ -85,6 +85,7 @@ class PipelineParams(ParamGroup):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.sampling_ray_num = 24
+        self.sampling_ray_res = 100
         self.depth_ratio = 1.0 # 1.0 (bounded) / 0.0 (unbounded)
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
@@ -109,6 +110,9 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2        
         self.lambda_dist = 1000 # 100(unbounded) ~ 1000(bounded)
         self.lambda_normal = 0.05
+        self.lambda_smooth_b = 0.1
+        self.lambda_smooth_r = 0.05
+        self.lambda_smooth_m = 0.04
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

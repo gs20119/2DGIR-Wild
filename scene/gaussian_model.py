@@ -107,13 +107,13 @@ class GaussianModel:
         R = build_rotation(self.get_rotation) # [N,3,3]
         return R[:,:,2] # [N,3]
     
-    def get_incidents(self, viewpoint_camera, incident_dirs):
-        self.forward(viewpoint_camera) 
-        incidents = torch.zeros_like(incident_dirs) # [N,S,3]
-        for s in range(incident_dirs.shape[1]): 
-            incident_dir = incident_dirs[:,s] # [N,3]
-            incidents[:,s] = self.forward_cache(incident_dir) # [N,3]
-        return incidents
+    def get_incidents(self, viewpoint_camera, incident_dirs, select=None):
+        # suppose that directions are selected already
+        self.forward(viewpoint_camera, select=select) 
+        S = incident_dirs.shape[1]
+        incident_dirs_flat = incident_dirs.reshape(-1,3) # [NS,3]
+        incidents = self.forward_cache(incident_dirs_flat, S) # [NS,3]
+        return incidents.reshape(-1,S,3) # [N,S,3]
 
     @property
     def get_base_color(self): # [N,3]
@@ -167,7 +167,7 @@ class GaussianModel:
 
         norm_xyz=(self._xyz-self._xyz.min(dim=0)[0])/(self._xyz.max(dim=0)[0]-self._xyz.min(dim=0)[0])
         norm_xyz=(norm_xyz-0.5)*2
-        box_coord=torch.rand(size=(self._xyz.shape[0],self.map_num,2),device="cuda")
+        box_coord=torch.rand(size=(self._xyz.shape[0],self.map_num,2),device="cuda") 
             
         for i in range(self.map_num-1):
             rand_weight=torch.rand(size=(2,3),device="cuda")
@@ -175,7 +175,7 @@ class GaussianModel:
             box_coord[:,i,:]=torch.einsum('bi,ni->nb', rand_weight, norm_xyz)*self.coord_scale
             logging.info((f"rand sample coordinate weight: {rand_weight}"))
             
-        box_coord[:,-1,:]=box_coord[:,-1,:]*0+256*2*2/self.downsample_resolution
+        box_coord[:,-1,:]=box_coord[:,-1,:]*0+256*2*2/self.downsample_resolution # 
         self.box_coord=nn.Parameter(box_coord.requires_grad_(True))
             
 
@@ -361,30 +361,39 @@ class GaussianModel:
 
         
         
-    def forward(self, viewpoint_camera, direction=None, store_cache=True): # direction = [N,3]
+    def forward(self, viewpoint_camera, direction=None, store_cache=True, select=None): # direction = [N,3]
 
         img = viewpoint_camera.original_image.cuda()
         out_gen = self.map_generator(img.unsqueeze(0),eval_mode=self.eval_mode)
-        feature_maps = out_gen["feature_maps"]
-        if self.use_features_mask:
-            self.features_mask=out_gen["mask"]
-        box_coord1, box_coord2 = self.box_coord[:,-1,:], self.box_coord[:,:self.map_num-1,:]
-        feature_maps = feature_maps.reshape(self.map_num,-1,feature_maps.shape[-2],feature_maps.shape[-1])
+        self._feature_maps = out_gen["feature_maps"] # [1, M*C, H, W]
+        feature_maps = self._feature_maps.reshape(self.map_num,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1]) # [M=3,C=16,271,362]
 
-        point_features_add = torch.empty(0)
-        if self.map_num > 1: # if there are additional maps 
-            point_features_add, self.map_pts_norm = sample_from_feature_maps(
-                feature_maps[:self.map_num-1,...], self._xyz, box_coord2, self.coord_scale, self.feature_maps_combine)
-        point_features_proj, project_mask = project2d( # projection map
-            self._xyz, viewpoint_camera.world_view_transform, viewpoint_camera.intrinsic_martix, box_coord1, feature_maps[-1,...].unsqueeze(0))
-        point_features = torch.cat([point_features_add, point_features_proj],dim=1)
-        self._point_features = point_features
+        if self.use_features_mask:
+            self.features_mask = out_gen["mask"]
+        box_coord_proj, box_coord_add = self.box_coord[:,-1,:], self.box_coord[:,:self.map_num-1,:] # [N,2] and [N,M-1,2]
+        
+        coord_proj, project_mask = project2d( # coord_proj [1, 1, N, 2]
+            self._xyz, viewpoint_camera.world_view_transform, 
+            viewpoint_camera.intrinsic_martix, box_coord_proj, feature_maps[-1,...].unsqueeze(0))
+        coord_add = box_coord_add.permute(1,0,2).unsqueeze(1)/self.coord_scale # coord_add [M-1, 1, N, 2]
+        coordinates = torch.cat([coord_add, coord_proj], dim=0) # [M, 1, N, 2]
+        self.coordinates = coordinates.squeeze().permute(1,0,2) # [N, M, 2]
+
+        point_features = F.grid_sample( # [N, M, C]
+            feature_maps, coordinates.float(), 
+            mode='bilinear', padding_mode='border').permute(2,3,0,1).squeeze() 
+        point_features[~project_mask,-1,:].zero_()
+        self._point_features = point_features.reshape((point_features.shape[0],-1)) # [N, M*C]    
+
+        if select is not None:
+            return self.color_net(self._xyz[select], self._pbr_features[select], self._point_features[select], direction,
+                inter_weight=self.colornet_inter_weight, store_cache=store_cache)
 
         return self.color_net(self._xyz, self._pbr_features, self._point_features, direction,
             inter_weight=self.colornet_inter_weight, store_cache=store_cache)
 
-    def forward_cache(self, direction): 
-        return self.color_net.forward_cache(direction)
+    def forward_cache(self, direction, num_samples=1): 
+        return self.color_net.forward_cache(direction, num_samples)
 
 
     def replace_tensor_to_optimizer(self, tensor, name):
@@ -485,8 +494,7 @@ class GaussianModel:
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
+        selected_pts_mask = torch.logical_and(selected_pts_mask, torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
             
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)     
         stds = torch.cat([stds, 0 * torch.ones_like(stds[:,:1])], dim=-1) # 2DGS
@@ -514,10 +522,10 @@ class GaussianModel:
         new_tensor={}
         new_tensor["xyz"] = self._xyz[selected_pts_mask]            
         new_tensor["f_intr"] = self._pbr_features[selected_pts_mask]
-        new_tensor["opacity"]  = self._opacity[selected_pts_mask]
-        new_tensor["scaling"]  = self._scaling[selected_pts_mask]
-        new_tensor["rotation"]  = self._rotation[selected_pts_mask]
-        new_tensor["box_coord"]=self.box_coord[selected_pts_mask]
+        new_tensor["opacity"] = self._opacity[selected_pts_mask]
+        new_tensor["scaling"] = self._scaling[selected_pts_mask]
+        new_tensor["rotation"] = self._rotation[selected_pts_mask]
+        new_tensor["box_coord"] = self.box_coord[selected_pts_mask]
         
         self.densification_postfix(new_tensor)
 

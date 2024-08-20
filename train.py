@@ -15,6 +15,7 @@ import numpy as np
 from random import randint
 from utils.loss_utils import l1_loss, ssim
 from gaussian_renderer import render, network_gui
+from gaussian_renderer import sample_incident_rays_all
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
@@ -28,6 +29,7 @@ import matplotlib.pyplot as plt
 from render import *
 from metrics import evaluate as evaluate_metrics
 from metrics_half import evaluate as evaluate_metrics_half
+from kornia.filters import laplacian, spatial_gradient
 import pickle
 
 import lpips
@@ -63,14 +65,32 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         pickle.dump(args, file)
     
     # rendered images in training progress (train_temp_something)
+    # TODO gather these paths in a dictionary 
     render_temp_path=os.path.join(dataset.model_path,"train_temp_rendering")
-    gt_temp_path=os.path.join(dataset.model_path,"train_temp_gt")
-    if os.path.exists(render_temp_path):
-        shutil.rmtree(render_temp_path)
-    if os.path.exists(gt_temp_path):
-        shutil.rmtree(gt_temp_path)
+    gt_temp_path=os.path.join(render_temp_path, "gt")
+    base_temp_path=os.path.join(render_temp_path, "base")
+    rough_temp_path=os.path.join(render_temp_path, "rough")
+    metal_temp_path=os.path.join(render_temp_path, "metal")
+    feature_maps_temp_path=os.path.join(render_temp_path, "feature_maps")
+    incident_map_temp_path=os.path.join(render_temp_path, "incident_light_maps")
+    render_temp_path=os.path.join(render_temp_path, "render")
+    
+    if os.path.exists(render_temp_path): shutil.rmtree(render_temp_path)
+    if os.path.exists(gt_temp_path): shutil.rmtree(gt_temp_path)
+    if os.path.exists(base_temp_path): shutil.rmtree(base_temp_path)
+    if os.path.exists(rough_temp_path): shutil.rmtree(rough_temp_path)
+    if os.path.exists(metal_temp_path): shutil.rmtree(metal_temp_path)
+    if os.path.exists(feature_maps_temp_path): shutil.rmtree(feature_maps_temp_path)
+    if os.path.exists(incident_map_temp_path): shutil.rmtree(incident_map_temp_path)
+
     os.makedirs(render_temp_path,exist_ok=True)
     os.makedirs(gt_temp_path,exist_ok=True)
+    os.makedirs(base_temp_path,exist_ok=True)
+    os.makedirs(rough_temp_path,exist_ok=True)
+    os.makedirs(metal_temp_path,exist_ok=True)
+    os.makedirs(feature_maps_temp_path,exist_ok=True)
+    os.makedirs(incident_map_temp_path,exist_ok=True)
+
     if args.use_features_mask:
         render_temp_mask_path=os.path.join(dataset.model_path,"train_mask_temp_rendering")
         if os.path.exists(render_temp_mask_path):
@@ -137,21 +157,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
             mask=gaussians.features_mask
             mask=torch.nn.functional.interpolate(mask,size=(image.shape[-2:]))
             Ll1 = l1_loss(image*mask, gt_image*mask)                        
-            loss = (1.0-opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0-ssim(image*mask, gt_image*mask))
-            loss += (torch.square(1-gaussians.features_mask)).mean()*args.features_mask_loss_coef
+            loss = (1.0-opt.lambda_dssim)*Ll1 + opt.lambda_dssim*(1.0-ssim(image*mask, gt_image*mask))
+            loss += (torch.square(1-gaussians.features_mask)).mean()*args.features_mask_loss_coef # L_vm (masking)
         else:
             Ll1 = l1_loss(image, gt_image)                     
-            loss = (1.0-opt.lambda_dssim) * Ll1 + opt.lambda_dssim*(1.0-ssim(image, gt_image))
+            loss = (1.0-opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0-ssim(image, gt_image))
 
         if args.use_lpips_loss: 
             loss += lpips_criteria(image,gt_image).mean()*args.lpips_loss_coef
 
         # Gaussian-Wild regularization
         if args.use_scaling_loss:
-            loss += torch.abs(gaussians.get_scaling).mean()*args.scaling_loss_coef # L_sc (scaling)
+            loss += torch.abs(gaussians.get_scaling).mean()*args.scaling_loss_coef 
 
         if args.use_box_coord_loss:
-            loss += torch.relu(torch.abs(gaussians.map_pts_norm)-1).mean()*args.box_coord_loss_coef # L_vm (visibility map)
+            loss += torch.relu(torch.abs(gaussians.coordinates[:,:-1,:])-1).mean()*args.box_coord_loss_coef # L_sc
 
         # 2DGS regularization 
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
@@ -160,13 +180,34 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
         surf_normal = render_pkg['surf_normal']
-        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-        normal_loss = lambda_normal * (normal_error).mean()
-        dist_loss = lambda_dist * (rend_dist).mean()
+        normal_error = (1-(rend_normal*surf_normal).sum(dim=0))[None]
+        normal_loss = lambda_normal*(normal_error).mean()
+        dist_loss = lambda_dist*(rend_dist).mean()
+
+        # Inverse Rendering Regularization
+        #data, img = [C, H, W]
+        image_base = render_pkg["render_base"]
+        image_rough = render_pkg["render_rough"] 
+        image_metal = render_pkg["render_metal"]
+
+        grad_rough = spatial_gradient(image_rough[None], order=1)[0] # [1,2,H,W]
+        grad_metal = spatial_gradient(image_metal[None], order=1)[0] # [1,2,H,W]
+        grad_base = spatial_gradient(image_base[None], order=1)[0] # [3,2,H,W]
+        grad_gt_color = spatial_gradient(gt_image[None], order=2)[0,:,[0,2]] # [3,2,H,W]
+
+        rough_smooth = opt.lambda_smooth_r * (grad_rough.abs() * torch.exp(-grad_base.norm(dim=0, keepdim=True))).mean() 
+        metal_smooth = opt.lambda_smooth_m * (grad_metal.abs() * torch.exp(-grad_base.norm(dim=0, keepdim=True))).mean()        
+        base_smooth = opt.lambda_smooth_b * (grad_base.abs() * torch.exp(-grad_gt_color.abs())).mean()
+        
+        #if args.use_features_mask and iteration>args.features_mask_iters: # TODO
+        #    smooth_loss = (data_grad.abs() * torch.exp(-rgb.grad.abs()) * mask).sum(1).mean() 
+        #    smooth_loss = (data_grad.abs() * torch.exp(-rgb.grad.norm(dim=1, keepdim=True)) * mask).sum(1).mean() #2
+        
+        smooth_loss = base_smooth + rough_smooth + metal_smooth 
 
         # Total Loss
         psnr_ = psnr(image,gt_image).mean().double()    
-        total_loss = loss + normal_loss + dist_loss  
+        total_loss = loss + normal_loss + dist_loss + smooth_loss
         total_loss.backward()
         iter_end.record()
         
@@ -179,13 +220,47 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
 
             if (iteration%1000==0) or (iteration==1):
-                print("Saving temporary images")
-                torchvision.utils.save_image(image, os.path.join(render_temp_path, f"iter{iteration}_"+viewpoint_cam.image_name + ".png"))
-                torchvision.utils.save_image(gt_image, os.path.join(gt_temp_path, f"iter{iteration}_"+viewpoint_cam.image_name + ".png"))
-                print("Saving Complete.")
+                imgname = f"iter{iteration}_"+viewpoint_cam.image_name + ".png"
+                torchvision.utils.save_image(image, os.path.join(render_temp_path, imgname))
+                torchvision.utils.save_image(gt_image, os.path.join(gt_temp_path, imgname))
+                
+                torchvision.utils.save_image(image_base, os.path.join(base_temp_path, imgname))
+                torchvision.utils.save_image(image_rough, os.path.join(rough_temp_path, imgname))
+                torchvision.utils.save_image(image_metal, os.path.join(metal_temp_path, imgname))
+
                 if args.use_features_mask:
-                    torchvision.utils.save_image(gaussians.features_mask.repeat(1,3,1,1), os.path.join(render_temp_mask_path, f"iter{iteration}_"+viewpoint_cam.image_name + ".png"))
-            
+                    torchvision.utils.save_image(
+                        gaussians.features_mask.repeat(1,3,1,1), 
+                        os.path.join(render_temp_mask_path, imgname))
+
+            # save feature maps into image
+            if iteration%2000==0:
+                map_num = gaussians.map_num 
+                for i in range(10): # range(gaussians._feature_maps.shape[1]):
+                    feature_map_temp_path = os.path.join(feature_maps_temp_path, f"{(i//map_num):02d}_{(i%map_num):02d}")
+                    os.makedirs(feature_map_temp_path,exist_ok=True)
+                    feature_image = gaussians._feature_maps[0,i,:,:].detach()
+                    # print(feature_image.min().item(), feature_image.max().item())
+                    feature_image -= feature_image.min()
+                    feature_image /= feature_image.max()
+                    torchvision.utils.save_image(feature_image, os.path.join(feature_map_temp_path, imgname))
+
+            # save incident light maps into image    
+            if iteration%2000==0 or iteration==10:
+                print("Extracting incident light maps")
+                mapname = f"iter{iteration}_"+viewpoint_cam.image_name
+                res_lightmap = pipe.sampling_ray_res
+                normal = gaussians.get_normal
+                indices = np.arange(normal.shape[0])%5000==0
+
+                incident_dirs_full = sample_incident_rays_all(normal[indices], res=res_lightmap).detach()
+                incidents_full = gaussians.get_incidents(viewpoint_cam, incident_dirs_full, indices)
+                incident_maps = incidents_full.reshape(-1, res_lightmap//4, res_lightmap, 3).permute(0,3,1,2)
+                
+                for idx, lightmap in enumerate(incident_maps):
+                    torchvision.utils.save_image(lightmap, os.path.join(incident_map_temp_path, mapname + f"({idx:02d}).png"))
+
+
             if iteration % 10 == 0:
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",

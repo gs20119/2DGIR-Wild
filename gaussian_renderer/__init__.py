@@ -15,12 +15,12 @@ from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRas
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from utils.point_utils import depth_to_normal
-from utils.graphics_utils import fibonacci_sphere_sampling
+from utils.graphics_utils import fibonacci_sphere_sampling, full_hemisphere_sampling
 import torch.nn.functional as F
 import numpy as np
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
-        scaling_modifier = 1.0, other_viewpoint_camera=None, is_training=False, render_type='brdf'):
+        scaling_modifier = 1.0, other_viewpoint_camera=None, is_training=False):
     """
     Render the scene. 
     Background tensor (bg_color) must be on GPU!
@@ -95,29 +95,31 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
     brdf_color, extra_results = rendering_equation(
         base_color, roughness, metallic, normal, view, 
         incidents, incident_dirs, incident_areas)
-    if render_type=='base': brdf_color = base_color.detach() # for rendering intrinsics, not for training
-    elif render_type=='rough': brdf_color = torch.cat([roughness for _ in range(3)], dim=-1)
-    elif render_type=='metal': brdf_color = torch.cat([metallic for _ in range(3)], dim=-1)
+    colors = torch.cat([brdf_color, base_color, roughness, metallic], dim=-1)
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    rendered_image, radii, allmap = rasterizer(
+    rendered_images, radii, allmap = rasterizer(
         means3D = means3D,            # [N,3]
         means2D = means2D,            # [N,3]
         shs = None,                   # [N,16,3], not used
-        colors_precomp = brdf_color, # [N,3]
+        colors_precomp = colors,      # [N,3+3+1+1]
         opacities = opacity,          # [N,1]  
         scales = scales,              # [N,2] 
         rotations = rotations,        # [N,4] (quarternion)    
         cov3D_precomp = cov3D_precomp)
-
+    
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-    rets = {"render": rendered_image,
-            "viewspace_points": means2D,
-            "visibility_filter" : radii > 0,
-            "radii": radii}       
-    rets.update(extra_results) 
+    rets = {
+        "render": rendered_images[:3], # [3,H,W]
+        "render_base": rendered_images[3:6], # [3,H,W]
+        "render_rough": rendered_images[6:7], # [1,H,W]
+        "render_metal": rendered_images[7:8], # [1,H,W]
+        "viewspace_points": means2D,
+        "visibility_filter": radii > 0,
+        "radii": radii}       
     
+
     # 2DGS renderer part (additional)
     # additional regularizations
     render_alpha = allmap[1:2]
@@ -164,8 +166,12 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
 
 # From Relightable 3DGS
 def sample_incident_rays(normals, is_training=False, sample_num=24): 
-    incident_dirs, incident_areas = fibonacci_sphere_sampling(normals, sample_num, random_rotate=is_training) # random_rotate - why?
+    incident_dirs, incident_areas = fibonacci_sphere_sampling(normals, sample_num, random_rotate=is_training) 
     return incident_dirs, incident_areas  # [N,S,3], [N,S,1]
+
+def sample_incident_rays_all(normals, res=100): 
+    incident_dirs = full_hemisphere_sampling(normals, res=res)
+    return incident_dirs  # [N,(res/4)*(res),3], [N,(res/4)*(res),1]
 
 
 def rendering_equation(base_color, roughness, metallic, normals, 
