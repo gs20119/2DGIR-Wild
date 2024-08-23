@@ -113,7 +113,7 @@ class GaussianModel:
         S = incident_dirs.shape[1]
         incident_dirs_flat = incident_dirs.reshape(-1,3) # [NS,3]
         incidents = self.forward_cache(incident_dirs_flat, S) # [NS,3]
-        return incidents.reshape(-1,S,3) # [N,S,3]
+        return incidents.reshape(-1,S,3)#.clamp(min=0.0) # [N,S,3]
 
     @property
     def get_base_color(self): # [N,3]
@@ -275,8 +275,6 @@ class GaussianModel:
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
             l.append('rot_{}'.format(i))
-
-
         return l
 
     def save_ckpt_ply(self, path):

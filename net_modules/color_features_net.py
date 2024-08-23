@@ -49,7 +49,7 @@ class Color_net(nn.Module):
         
         self.color_decoder=lin_module(
             fin_dim+view_dim, 3, cde_dims, multires[0],
-            act_fun=nn.ReLU(), last_act_fun=nn.Sigmoid(), # apply sigmoid at last
+            act_fun=nn.ReLU(), last_act_fun=nn.ReLU(), # apply sigmoid at last
             weight_norm=weight_norm, weight_xavier=weight_xavier)
         
         self.use_drop_out=use_drop_out

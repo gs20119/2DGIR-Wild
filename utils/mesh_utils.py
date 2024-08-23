@@ -98,7 +98,7 @@ class GaussianExtractor(object):
         self.viewpoint_stack = []
 
     @torch.no_grad()
-    def reconstruction(self, viewpoint_stack):
+    def reconstruction(self, viewpoint_stack, mode='render'):
         """
         reconstruct radiance field given cameras
         """
@@ -106,7 +106,7 @@ class GaussianExtractor(object):
         self.viewpoint_stack = viewpoint_stack
         for i, viewpoint_cam in tqdm(enumerate(self.viewpoint_stack), desc="reconstruct radiance fields"):
             render_pkg = self.render(viewpoint_cam, self.gaussians)
-            rgb = render_pkg['render_base']
+            rgb = render_pkg[mode] # 'render', 'render_base'
             alpha = render_pkg['rend_alpha']
             normal = torch.nn.functional.normalize(render_pkg['rend_normal'], dim=0)
             depth = render_pkg['surf_depth']

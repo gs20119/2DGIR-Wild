@@ -91,7 +91,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
     sample_num = pipe.sampling_ray_num # S
     incident_dirs, incident_areas = sample_incident_rays(normal, is_training, sample_num) # incident lights [N,S,3], [N,S,1]
     incidents = pc.get_incidents(viewpoint_camera, incident_dirs)  # incident rgb color from color net. [N,S,3]
-
+    
     brdf_color, extra_results = rendering_equation(
         base_color, roughness, metallic, normal, view, 
         incidents, incident_dirs, incident_areas)

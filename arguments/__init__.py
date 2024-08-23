@@ -110,9 +110,9 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2        
         self.lambda_dist = 1000 # 100(unbounded) ~ 1000(bounded)
         self.lambda_normal = 0.05
-        self.lambda_smooth_b = 0.1
-        self.lambda_smooth_r = 0.05
-        self.lambda_smooth_m = 0.04
+        self.lambda_smooth_b = 0.01
+        self.lambda_smooth_r = 0.005
+        self.lambda_smooth_m = 0.005
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
