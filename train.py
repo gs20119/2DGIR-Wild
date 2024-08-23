@@ -203,7 +203,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         #    smooth_loss = (data_grad.abs() * torch.exp(-rgb.grad.abs()) * mask).sum(1).mean() 
         #    smooth_loss = (data_grad.abs() * torch.exp(-rgb.grad.norm(dim=1, keepdim=True)) * mask).sum(1).mean() #2
         
-        smooth_loss = base_smooth + rough_smooth + metal_smooth 
+        smooth_loss = 0.0 # base_smooth + rough_smooth + metal_smooth 
 
         # Total Loss
         psnr_ = psnr(image,gt_image).mean().double()    
@@ -233,20 +233,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
                         gaussians.features_mask.repeat(1,3,1,1), 
                         os.path.join(render_temp_mask_path, imgname))
 
-            # save feature maps into image
-            if iteration%2000==0:
-                map_num = gaussians.map_num 
-                for i in range(10): # range(gaussians._feature_maps.shape[1]):
-                    feature_map_temp_path = os.path.join(feature_maps_temp_path, f"{(i//map_num):02d}_{(i%map_num):02d}")
-                    os.makedirs(feature_map_temp_path,exist_ok=True)
-                    feature_image = gaussians._feature_maps[0,i,:,:].detach()
-                    # print(feature_image.min().item(), feature_image.max().item())
-                    feature_image -= feature_image.min()
-                    feature_image /= feature_image.max()
-                    torchvision.utils.save_image(feature_image, os.path.join(feature_map_temp_path, imgname))
+            # save feature maps into image (not interested for now)
+            # if iteration%2000==0:
+            #     map_num = gaussians.map_num 
+            #     for i in range(10): # range(gaussians._feature_maps.shape[1]):
+            #         feature_map_temp_path = os.path.join(feature_maps_temp_path, f"{(i//map_num):02d}_{(i%map_num):02d}")
+            #         os.makedirs(feature_map_temp_path,exist_ok=True)
+            #         feature_image = gaussians._feature_maps[0,i,:,:].detach()
+            #         # print(feature_image.min().item(), feature_image.max().item())
+            #         feature_image -= feature_image.min()
+            #         feature_image /= feature_image.max()
+            #         torchvision.utils.save_image(feature_image, os.path.join(feature_map_temp_path, imgname))
 
             # save incident light maps into image    
-            if iteration%2000==0 or iteration==10:
+            if iteration%5000==0 or iteration==10:
                 print("Extracting incident light maps")
                 mapname = f"iter{iteration}_"+viewpoint_cam.image_name
                 res_lightmap = pipe.sampling_ray_res

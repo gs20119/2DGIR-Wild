@@ -20,6 +20,7 @@ from utils.general_utils import safe_state, PILtoTorch
 from argparse import ArgumentParser,Namespace
 from arguments import ModelParams, PipelineParams, get_combined_args,args_init
 from gaussian_renderer import GaussianModel
+from gaussian_renderer import sample_incident_rays_all
 import copy,pickle,time
 from utils.general_utils import *
 import imageio
@@ -61,6 +62,19 @@ def render_intrinsic(path, views, gaussians, pipeline, background):
             rendering = render(view, gaussians, pipeline, background)["render_"+attr]       
             torchvision.utils.save_image(rendering, os.path.join(intrinsic_path, '{0:05d}'.format(idx) + ".png"))
 
+@torch.no_grad()
+def generate_lightmap(path, views, gaussians, pipeline, background, indices=[0]):
+    lightmaps_path = os.path.join(path, "incidents")
+    res_lightmap = pipe.sampling_ray_res
+    normal = gaussians.get_normal
+    for idx_v, view in enumerate(tqdm(views, desc="Solving incident light maps")):
+        incident_dirs_full = sample_incident_rays_all(normal[indices], res=res_lightmap)
+        incidents_full = gaussians.get_incidents(view, incident_dirs_full, indices)
+        incident_maps = incidents_full.reshape(-1, res_lightmap//4, res_lightmap, 3).permute(0,3,1,2)
+        for idx_l, lightmap in zip(indices, incident_maps):
+            lightmap_path = os.path.join(lightmaps_path, f"point_{idx_l}")
+            makedirs(lightmap_path, exist_ok=True)
+            torchvision.utils.save_image(lightmap, os.path.join(lightmap_path, f"({idx_v:02d}).png"))
 
 @torch.no_grad()
 def test_rendering_speed(views, gaussians, pipeline,background,use_cache=False): # don't use
@@ -105,6 +119,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--skip_mesh", action="store_true")
+    parser.add_argument("--skip_incident", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--render_interpolate", action="store_true",default=False)
     parser.add_argument("--render_multiview_video", action="store_true",default=False)
@@ -146,6 +161,13 @@ if __name__ == "__main__":
         gaussExtractor.reconstruction(test_cameras)
         gaussExtractor.export_image(test_dir)
         render_intrinsic(test_dir, test_cameras, gaussians, pipe, background) 
+    
+    indices = [25599, 82053, 3684, 1677, 3685, 10987, 8432]
+    if not args.skip_incident and (len(indices)>0):
+        print("export incident light maps ...")
+        train_cameras=scene.getTrainCameras() 
+        os.makedirs(train_dir, exist_ok=True)
+        generate_lightmap(train_dir, train_cameras, gaussians, pipe, background, indices) 
 
     if args.render_multiview_video: 
         render_multiview(test_dir, scene.getTestCameras(), gaussians, pipe, background)
@@ -155,10 +177,9 @@ if __name__ == "__main__":
 
     if not args.skip_mesh:
         print("export mesh ...")
+        train_cameras=scene.getTrainCameras()
         os.makedirs(train_dir, exist_ok=True)
-        # export only diffuse texture
-        #gaussExtractor.gaussians.colornet_inter_weight = 0.0
-        gaussExtractor.reconstruction(scene.getTrainCameras())
+        gaussExtractor.reconstruction(train_cameras, mode='render_base')
 
         # extract the mesh and save
         if args.unbounded:
