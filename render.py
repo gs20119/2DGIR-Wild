@@ -43,15 +43,15 @@ def render_interpolate(path, views, gaussians, pipeline, background): # select s
     gaussians.colornet_inter_weight=1.0
 
 @torch.no_grad()
-def render_multiview(path, views, gaussians, pipeline, background): # select small portion of views
+def render_multiview(path, views, gaussians, pipeline, background, scene_idx=0): # select small portion of views
     origin_views = copy.deepcopy(views)
     multiview_path = os.path.join(path, "multiview")
-    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
-        sub_multiview_path=os.path.join(multiview_path,f"{idx}")
-        makedirs(sub_multiview_path, exist_ok=True)
-        for o_idx, o_view in enumerate(tqdm(origin_views, desc="Rendering progress")):
-            rendering = render(view, gaussians, pipeline, background, other_viewpoint_camera=o_view)["render"]
-            torchvision.utils.save_image(rendering, os.path.join(sub_multiview_path, f"{idx}_{o_idx}" + ".png"))
+    view = views[scene_idx]
+    sub_multiview_path=os.path.join(multiview_path,f"{scene_idx}")
+    makedirs(sub_multiview_path, exist_ok=True)
+    for o_idx, o_view in enumerate(tqdm(origin_views, desc="Rendering progress")):
+        rendering = render(view, gaussians, pipeline, background, viewpoint_camera=o_view)["render"]
+        torchvision.utils.save_image(rendering, os.path.join(sub_multiview_path, f"view_{o_idx}" + ".png"))
 
 @torch.no_grad()
 def render_intrinsic(path, views, gaussians, pipeline, background):
@@ -118,11 +118,11 @@ if __name__ == "__main__":
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
-    parser.add_argument("--skip_mesh", action="store_true")
     parser.add_argument("--skip_incident", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--render_interpolate", action="store_true",default=False)
     parser.add_argument("--render_multiview_video", action="store_true",default=False)
+    parser.add_argument("--bake_mesh", action="store_true",default=False)
     parser.add_argument("--voxel_size", default=-1.0, type=float, help='Mesh: voxel size for TSDF') # From 2DGS
     parser.add_argument("--depth_trunc", default=-1.0, type=float, help='Mesh: Max depth range for TSDF')
     parser.add_argument("--sdf_trunc", default=-1.0, type=float, help='Mesh: truncation value for TSDF')
@@ -146,38 +146,37 @@ if __name__ == "__main__":
     gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)    
     gaussians.set_eval(True)
 
+    train_cameras=scene.getTrainCameras()
+    test_cameras=scene.getTestCameras()
+
     if not args.skip_train:
         print("export training images ...")
-        train_cameras=scene.getTrainCameras()
         os.makedirs(train_dir, exist_ok=True)
         gaussExtractor.reconstruction(train_cameras)
         gaussExtractor.export_image(train_dir)  
         render_intrinsic(train_dir, train_cameras, gaussians, pipe, background) 
 
-    if not args.skip_test and (len(scene.getTestCameras()) > 0):
+    if not args.skip_test and (len(test_cameras) > 0):
         print("export rendered testing images ...")
-        test_cameras=scene.getTestCameras()
         os.makedirs(test_dir, exist_ok=True)
         gaussExtractor.reconstruction(test_cameras)
         gaussExtractor.export_image(test_dir)
         render_intrinsic(test_dir, test_cameras, gaussians, pipe, background) 
     
-    indices = [25599, 82053, 3684, 1677, 3685, 10987, 8432]
+    indices = [36948, 51031]
     if not args.skip_incident and (len(indices)>0):
         print("export incident light maps ...")
-        train_cameras=scene.getTrainCameras() 
         os.makedirs(train_dir, exist_ok=True)
         generate_lightmap(train_dir, train_cameras, gaussians, pipe, background, indices) 
 
     if args.render_multiview_video: 
-        render_multiview(test_dir, scene.getTestCameras(), gaussians, pipe, background)
+        render_multiview(train_dir, train_cameras, gaussians, pipe, background, scene_idx=19)
 
     if args.render_interpolate: 
-        render_interpolate(test_dir, scene.getTrainCameras(), gaussians, pipe, background)
+        render_interpolate(test_dir, train_cameras, gaussians, pipe, background)
 
-    if not args.skip_mesh:
+    if args.bake_mesh:
         print("export mesh ...")
-        train_cameras=scene.getTrainCameras()
         os.makedirs(train_dir, exist_ok=True)
         gaussExtractor.reconstruction(train_cameras, mode='render_base')
 
