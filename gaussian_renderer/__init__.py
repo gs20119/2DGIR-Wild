@@ -19,22 +19,18 @@ from utils.graphics_utils import fibonacci_sphere_sampling, full_hemisphere_samp
 import torch.nn.functional as F
 import numpy as np
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
-        scaling_modifier = 1.0, other_viewpoint_camera=None, is_training=False):
+def render(scene_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
+        scaling_modifier = 1.0, viewpoint_camera=None, is_training=False):
     """
     Render the scene. 
     Background tensor (bg_color) must be on GPU!
     """
-    if other_viewpoint_camera is not None: #render using other camera center
-        viewpoint_camera.camera_center=other_viewpoint_camera.camera_center
-    
+
+    if viewpoint_camera is None: viewpoint_camera = scene_camera
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0     #[Npoint,3]
     try: screenspace_points.retain_grad()
     except: pass 
-    
-    if other_viewpoint_camera is not None: #render using other camera center
-        viewpoint_camera=other_viewpoint_camera
 
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
@@ -90,7 +86,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
 
     sample_num = pipe.sampling_ray_num # S
     incident_dirs, incident_areas = sample_incident_rays(normal, is_training, sample_num) # incident lights [N,S,3], [N,S,1]
-    incidents = pc.get_incidents(viewpoint_camera, incident_dirs)  # incident rgb color from color net. [N,S,3]
+    incidents = pc.get_incidents(scene_camera, incident_dirs)  # incident rgb color from color net. [N,S,3]
     
     brdf_color, extra_results = rendering_equation(
         base_color, roughness, metallic, normal, view, 
@@ -107,11 +103,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor,
         scales = scales,              # [N,2] 
         rotations = rotations,        # [N,4] (quarternion)    
         cov3D_precomp = cov3D_precomp)
-    
+    gamma = pc.get_gamma
+    rendered_brdf = rendered_images[:3].clamp(min=1e-9) ** gamma # HDR -> SDR tone mapping
+
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     rets = {
-        "render": rendered_images[:3], # [3,H,W]
+        "render": rendered_brdf, # [3,H,W]
         "render_base": rendered_images[3:6], # [3,H,W]
         "render_rough": rendered_images[6:7], # [1,H,W]
         "render_metal": rendered_images[7:8], # [1,H,W]

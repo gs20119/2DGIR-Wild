@@ -51,7 +51,8 @@ class GaussianModel:
         self.base_color_activation = lambda x: torch.sigmoid(x) * 0.95 + 0.05 # 0.77 + 0.03
         self.roughness_activation = lambda x: torch.sigmoid(x) * 0.95 + 0.05
         self.metallic_activation = lambda x: torch.sigmoid(x) * 0.95 + 0.05
-        self.inverse_roughness_activation = lambda y: inverse_sigmoid((y-0.09) / 0.9)
+
+        #self.gamma_activation = torch.sigmoid
 
 
     def __init__(self, sh_degree:int, args): # args need render_type
@@ -67,6 +68,7 @@ class GaussianModel:
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
+        self.gamma = torch.empty(0) # HDR -> SDR tone mapping
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -130,6 +132,10 @@ class GaussianModel:
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
+
+    @property
+    def get_gamma(self):
+        return self.gamma # self.gamma_activation(self.gamma)
     
     def get_viewdirs(self, viewpoint_camera): # from gaussians to camera
         return F.normalize(viewpoint_camera.camera_center-self._xyz, dim=-1) 
@@ -165,6 +171,9 @@ class GaussianModel:
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
+        gamma = torch.ones(1).float().cuda()
+        self.gamma = nn.Parameter(gamma.requires_grad_(True))
+
         norm_xyz=(self._xyz-self._xyz.min(dim=0)[0])/(self._xyz.max(dim=0)[0]-self._xyz.min(dim=0)[0])
         norm_xyz=(norm_xyz-0.5)*2
         box_coord=torch.rand(size=(self._xyz.shape[0],self.map_num,2),device="cuda") 
@@ -182,7 +191,7 @@ class GaussianModel:
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")      
-        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")                  
+        self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -212,6 +221,11 @@ class GaussianModel:
             "name": "color_net"},
         ])
 
+        l.extend([{
+            'params': self.gamma,
+            'lr': training_args.gamma_lr, 
+            'name': "gamma"},
+        ])
 
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(
@@ -281,8 +295,7 @@ class GaussianModel:
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
-        normals = np.zeros_like(xyz)
-        
+        normals = self.get_normal.cpu().numpy()
         f_intr = self._pbr_features.detach().cpu().numpy()
         opacities = self.opacity_inverse_activation(self.get_opacity).detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
@@ -298,11 +311,13 @@ class GaussianModel:
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
         root_path=os.path.dirname(path)
-        other_atrributes_dict={"non":torch.rand(1,1)}
 
         torch.save(self.map_generator.state_dict(),os.path.join(root_path, "map_generator.pth"))
-        other_atrributes_dict["box_coord"]=self.box_coord
         torch.save(self.color_net.state_dict(),os.path.join(root_path, "color_net.pth"))
+
+        other_atrributes_dict={
+            "gamma": self.gamma, 
+            "box_coord": self.box_coord}
         torch.save(other_atrributes_dict,os.path.join(root_path, "other_atrributes_dict.pth"))
         
 
@@ -347,15 +362,16 @@ class GaussianModel:
         root_path=os.path.dirname(path)
 
         self.active_sh_degree = self.max_sh_degree
-        other_atrributes_dict=torch.load(os.path.join(root_path,"other_atrributes_dict.pth"),map_location="cpu")
         
         self.map_generator.load_state_dict(torch.load(os.path.join(root_path,"map_generator.pth"),map_location="cpu"))
         self.map_generator=self.map_generator.to(self.device)
-            
-        self.box_coord=other_atrributes_dict["box_coord"].to(self.device)
                 
         self.color_net.load_state_dict(torch.load(os.path.join(root_path,"color_net.pth"),map_location="cpu"))
         self.color_net = self.color_net.to(self.device)
+
+        other_attributes_dict=torch.load(os.path.join(root_path,"other_atrributes_dict.pth"),map_location="cpu")
+        self.gamma = other_attributes_dict["gamma"].to(self.device)
+        self.box_coord = other_attributes_dict["box_coord"].to(self.device)
 
         
         

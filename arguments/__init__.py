@@ -70,7 +70,7 @@ class ModelParams(ParamGroup):
 
         self.use_scaling_loss=False    
         self.use_lpips_loss=True
-        
+        self.use_ldr_image=True
         self.use_box_coord_loss=True
         self.coord_scale=1
         super().__init__(parser, "Loading Parameters", sentinel)
@@ -103,6 +103,7 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.map_generator_lr=1e-3*2
         self.color_net_lr=5e-4
+        self.gamma_lr = 0.001
         self.box_coord_lr=1
         self.warm_up_iter=0
         
