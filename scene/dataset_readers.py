@@ -24,6 +24,7 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 import pandas as pd
 import glob
+import yaml
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -282,10 +283,50 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png",data_pe
                            ply_path=ply_path)
     return scene_info
 
+def readCamerasFromReNeTransforms(path, white_background, num_cameras, lid): # DataLoader, not completed TODO
+    cam_infos = []
+    path = os.path.join(path, f"lset{lid:03d}")
+
+    cam_file = open(os.path.join(path, "camera.yaml"))
+    cam_intrinsics = yaml.load(cam_file, Loader=yaml.FullLoader)["intrinsics"]
+    FovX = focal2fov(cam_intrinsics["camera_matrix"][0][0])
+    FovY = focal2fov(cam_intrinsics["camera_matrix"][1][1])
+    cam_file.close()
+
+    for cid in range(num_cameras):
+        pose_path = os.path.join(path, "data", f"{cid:02d}_pose.txt")
+        image_path = os.path.join(path, "data", f"{cid:02d}_image.png")
+
+        ext_file = open(pose_path, 'r')
+        c2w = np.asarray([[float(num) for num in line.split()] for line in ext_file])
+        c2w[:3, 1:3] *= -1
+        w2c = np.linalg.inv(c2w)
+        R = np.transpose(w2c[:3,:3])
+        T = w2c[:3, 3]
+        ext_file.close()
+
+        image_name = f"image{lid:03d}_{cid:02d}.png"
+        image = Image.open(image_path)
+        image_norm = np.array(image.convert("RGBA")) / 255.0
+        bg = np.array([1,1,1]) if white_background else np.array([0,0,0])
+        image_mix = image_norm[:,:,:3] * image_norm[:, :, 3:4] + bg * (1 - image_norm[:, :, 3:4])      
+        image = Image.fromarray(np.array(image_mix*255.0, dtype=np.byte), "RGB")
+
+        idx = num_cameras*lid+cid
+        cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+
+    return cam_infos
+
+def readReNeSyntheticInfo(path, white_background, eval, extension=".png", num_cameras=50, num_lights=40): # TODO
+    pass
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
     "Blender" : readNerfSyntheticInfo
+    "ReNe": readReNeSyntheticInfo
 }
+
 def add_perturbation(img, perturbation, seed):
     if 'occ' in perturbation:
         draw = ImageDraw.Draw(img)
