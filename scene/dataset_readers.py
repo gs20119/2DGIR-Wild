@@ -32,6 +32,8 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
+    CenterX: np.array
+    CenterY: np.array
     image: np.array
     image_path: str
     image_name: str
@@ -86,24 +88,24 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
 
-        if intr.model=="SIMPLE_PINHOLE":
-            focal_length_x = intr.params[0]
-            FovY = focal2fov(focal_length_x, height)
-            FovX = focal2fov(focal_length_x, width)
-        elif intr.model=="PINHOLE":
-            focal_length_x = intr.params[0]
-            focal_length_y = intr.params[1]
-            FovY = focal2fov(focal_length_y, height)
-            FovX = focal2fov(focal_length_x, width)
+        # Assume dataset images are undistorted
+        if intr.model in ["SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"]: 
+            focal = intr.params[0]
+            center_x, center_y = intr.params[1], intr.params[2]
+            FovY = focal2fov(focal, height)
+            FovX = focal2fov(focal, width)
         else:
-            assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+            focal_x, focal_y = intr.params[0], intr.params[1]
+            center_x, center_y = intr.params[2], intr.params[3]
+            FovX = focal2fov(focal_x, width)
+            FovY = focal2fov(focal_y, height)
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)        
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)     
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, CenterX=center_x, CenterY=center_y,
+            image=image, image_path=image_path, image_name=image_name, width=width, height=height)     
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -209,7 +211,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
     with open(os.path.join(path, transformsfile)) as json_file:
         contents = json.load(json_file)
-        fovx = contents["camera_angle_x"]
+        FovX = contents["camera_angle_x"]
 
         frames = contents["frames"]      
         for idx, frame in enumerate(frames):
@@ -237,13 +239,14 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             norm_data = im_data / 255.0
             arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])      
             image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+            
+            focal = fov2focal(FovX, image.size[0])
+            FovY = focal2fov(focal, image.size[1])
+            center_x = image.size[0]/2
+            center_y = image.size[1]/2
 
-            fovy = focal2fov(fov2focal(fovx, image.size[0]), image.size[1])
-            FovY = fovy 
-            FovX = fovx
-
-            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                            image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
+            cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, CenterX=center_x, CenterY=center_y,
+                image=image, image_path=image_path, image_name=image_name, width=image.size[0], height=image.size[1]))
             
     return cam_infos
 

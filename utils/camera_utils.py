@@ -56,13 +56,15 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
-        focal_length_y=fov2focal(cam_info.FovY, cam_info.height)      #
-        focal_length_x=fov2focal(cam_info.FovX, cam_info.width)
+        focal_y=fov2focal(cam_info.FovY, cam_info.height) 
+        focal_x=fov2focal(cam_info.FovX, cam_info.width)
+        center_x = cam_info.CenterX
+        center_y = cam_info.CenterY
         intrinsic = torch.zeros(size=(3, 3), dtype=torch.float32,device="cuda")
-        intrinsic[0,0]=focal_length_x/args.resolution
-        intrinsic[1,1]=focal_length_y/args.resolution
-        intrinsic[0,2]=cam_info.width/(2*args.resolution)       #
-        intrinsic[1,2]=cam_info.height/(2*args.resolution)
+        intrinsic[0,0]=focal_x/args.resolution
+        intrinsic[1,1]=focal_y/args.resolution
+        intrinsic[0,2]=center_x/args.resolution   
+        intrinsic[1,2]=center_y/args.resolution 
         intrinsic[2,2]=1
     else:  # should be a type that converts to float
         if args.resolution == -1:
