@@ -326,7 +326,7 @@ def readReNeSyntheticInfo(path, white_background, eval, extension=".png", num_ca
 
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
     "ReNe": readReNeSyntheticInfo
 }
 
