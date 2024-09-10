@@ -203,7 +203,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         #    smooth_loss = (data_grad.abs() * torch.exp(-rgb.grad.abs()) * mask).sum(1).mean() 
         #    smooth_loss = (data_grad.abs() * torch.exp(-rgb.grad.norm(dim=1, keepdim=True)) * mask).sum(1).mean() #2
         
-        smooth_loss = 0.0 # base_smooth + rough_smooth + metal_smooth 
+        smooth_loss = base_smooth + rough_smooth + metal_smooth 
 
         # Total Loss
         psnr_ = psnr(image,gt_image).mean().double()    
