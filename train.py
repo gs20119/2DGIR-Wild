@@ -127,10 +127,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         lpips_criteria = lpips.LPIPS(net='vgg').to("cuda:0")
     logging.info(f"Start trainning....")
 
-    if args.warm_up_iter>0: 
-        gaussians.set_learning_rate("box_coord",0.0) 
-    
-
     for iteration in range(first_iter, opt.iterations + 1):  
         iter_start.record()
         gaussians.update_learning_rate(iteration, args.warm_up_iter) 
@@ -169,9 +165,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         # Gaussian-Wild regularization
         if args.use_scaling_loss:
             loss += torch.abs(gaussians.get_scaling).mean()*args.scaling_loss_coef 
-
-        if args.use_box_coord_loss:
-            loss += torch.relu(torch.abs(gaussians.coordinates[:,:-1,:])-1).mean()*args.box_coord_loss_coef # L_sc
 
         # 2DGS regularization 
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0

@@ -7,10 +7,9 @@ import os
 def argument_init(args):
 
     args.map_num=args.map_num
-    args.feature_maps_dim=16
+    args.feature_maps_dim=48
     args.feature_maps_combine="cat"
-    args.use_indep_box_coord=True
-    args.dynamic_features_dim = args.feature_maps_dim * args.map_num
+    args.dynamic_features_dim = args.feature_maps_dim
 
     args.map_generator_params={
         "features_dim":args.dynamic_features_dim,

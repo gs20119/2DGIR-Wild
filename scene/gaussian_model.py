@@ -173,19 +173,6 @@ class GaussianModel:
         gamma = torch.ones(1).float().cuda()
         self.gamma = nn.Parameter(gamma.requires_grad_(True))
 
-        norm_xyz=(self._xyz-self._xyz.min(dim=0)[0])/(self._xyz.max(dim=0)[0]-self._xyz.min(dim=0)[0])
-        norm_xyz=(norm_xyz-0.5)*2
-        box_coord=torch.rand(size=(self._xyz.shape[0],self.map_num,2),device="cuda") 
-            
-        for i in range(self.map_num-1):
-            rand_weight=torch.rand(size=(2,3),device="cuda")
-            rand_weight=rand_weight/rand_weight.sum(dim=-1).unsqueeze(1)
-            box_coord[:,i,:]=torch.einsum('bi,ni->nb', rand_weight, norm_xyz)*self.coord_scale
-            logging.info((f"rand sample coordinate weight: {rand_weight}"))
-            
-        box_coord[:,-1,:]=box_coord[:,-1,:]*0+256*2*2/self.downsample_resolution # 
-        self.box_coord=nn.Parameter(box_coord.requires_grad_(True))
-            
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -206,13 +193,6 @@ class GaussianModel:
             'lr': training_args.map_generator_lr, 
             "name": "map_generator"},
         ])
-
-        l.extend([{
-            'params': self.box_coord, 
-            'lr': training_args.box_coord_lr, 
-            "name": "box_coord"},
-        ])
-        self.prune_params_names.append("box_coord")
     
         l.extend([{
             'params': self.color_net.parameters(), 
@@ -238,12 +218,6 @@ class GaussianModel:
             lr_final=training_args.map_generator_lr*0.1,
             lr_delay_mult=0.1,
             max_steps=training_args.position_lr_max_steps)
-            
-        self.box_coord_scheduler_args = get_expon_lr_func(
-            lr_init=training_args.box_coord_lr*1,
-            lr_final=training_args.box_coord_lr*0.01,
-            lr_delay_mult=0.1,
-            max_steps=training_args.position_lr_max_steps)
 
 
     def update_learning_rate(self, iteration,warm_up_iter=0):
@@ -259,9 +233,7 @@ class GaussianModel:
                 param_group['lr'] = lr
                 lrs.append(lr)
                 
-            elif iteration>warm_up_iter: 
-                if param_group["name"]=="box_coord":           
-                    lr=self.box_coord_scheduler_args(iteration)
+            elif iteration>warm_up_iter:          
                     param_group["lr"]=lr
                     lrs.append(lr)
                 elif param_group["name"]=="map_generator":
@@ -315,8 +287,7 @@ class GaussianModel:
         torch.save(self.color_net.state_dict(),os.path.join(root_path, "color_net.pth"))
 
         other_atrributes_dict={
-            "gamma": self.gamma, 
-            "box_coord": self.box_coord}
+            "gamma": self.gamma,}
         torch.save(other_atrributes_dict,os.path.join(root_path, "other_atrributes_dict.pth"))
         
 
@@ -370,8 +341,6 @@ class GaussianModel:
 
         other_attributes_dict=torch.load(os.path.join(root_path,"other_atrributes_dict.pth"),map_location="cpu")
         self.gamma = other_attributes_dict["gamma"].to(self.device)
-        self.box_coord = other_attributes_dict["box_coord"].to(self.device)
-
         
         
     def forward(self, viewpoint_camera, direction=None, store_cache=True, select=None): # direction = [N,3]
@@ -379,28 +348,20 @@ class GaussianModel:
         img = viewpoint_camera.original_image.cuda() # [3, H, W]
         out_gen = self.map_generator(img.unsqueeze(0),eval_mode=self.eval_mode)
         self._feature_maps = out_gen["feature_maps"] # [1, M*C, h, w]
-        feature_maps = self._feature_maps.reshape(self.map_num,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1]) # [M=3,C=16,h=271,w=362]
-        #feature_maps = self._feature_maps.reshape(1,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1]) # [M=3,C=16,h=271,w=362]
+        feature_maps = self._feature_maps.reshape(1,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1])
 
         if self.use_features_mask:
             self.features_mask = out_gen["mask"]
-        box_coord_proj, box_coord_add = self.box_coord[:,-1,:], self.box_coord[:,:self.map_num-1,:] # [N,2] and [N,M-1,2]
         
         coord_proj, project_mask = project2d( # coord_proj [1, 1, N, 2]
             self._xyz, img, viewpoint_camera.world_view_transform, viewpoint_camera.intrinsic_martix)
-        coord_add = box_coord_add.permute(1,0,2).unsqueeze(1)/self.coord_scale # coord_add [M-1, 1, N, 2]
-        coordinates = torch.cat([coord_add, coord_proj], dim=0) # [M, 1, N, 2]
-        #coordinates = coord_proj # [1, 1, N, 2]
-        self.coordinates = coordinates.squeeze().permute(1,0,2) # [N, M, 2]
-        #self.coordinates = coordinates.squeeze().unsqueeze(1) # [N, 1, 2]
+        coordinates = coord_proj # [1, 1, N, 2]
+        self.coordinates = coordinates.squeeze().unsqueeze(1) # [N, 1, 2]
 
-        point_features = F.grid_sample( # [N, M, C] - [N, C]
-            feature_maps, coordinates.float(), 
-            mode='bilinear', padding_mode='border').permute(2,3,0,1).squeeze() 
-        point_features[~project_mask,-1,:].zero_()
-        #point_features[~project_mask, :].zero_()
-        self._point_features = point_features.reshape((point_features.shape[0],-1)) # [N, M*C]
-        #self._point_features = point_features    
+        point_features = F.grid_sample( # [N, C]
+            feature_maps, coordinates.float(), mode='bilinear', padding_mode='border').permute(2,3,0,1).squeeze() 
+        point_features[~project_mask, :].zero_()
+        self._point_features = point_features    
 
         if select is not None:
             return self.color_net(self._xyz[select], self._pbr_features[select], self._point_features[select], direction,
@@ -460,8 +421,6 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
         
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
-
-        self.box_coord=optimizable_tensors["box_coord"]
         
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
@@ -498,7 +457,6 @@ class GaussianModel:
         self._opacity = optimizable_tensors["opacity"]
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
-        self.box_coord=optimizable_tensors["box_coord"]
         
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -524,7 +482,6 @@ class GaussianModel:
         new_tensor["opacity"]  = self._opacity[selected_pts_mask].repeat(N,1)
         new_tensor["rotation"]  = self._rotation[selected_pts_mask].repeat(N,1)         
         new_tensor["f_intr"]  = self._pbr_features[selected_pts_mask].repeat(N,1) 
-        new_tensor["box_coord"]=self.box_coord[selected_pts_mask].repeat(N,1,1)
 
         self.densification_postfix(new_tensor)
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))    #
@@ -542,7 +499,6 @@ class GaussianModel:
         new_tensor["opacity"] = self._opacity[selected_pts_mask]
         new_tensor["scaling"] = self._scaling[selected_pts_mask]
         new_tensor["rotation"] = self._rotation[selected_pts_mask]
-        new_tensor["box_coord"] = self.box_coord[selected_pts_mask]
         
         self.densification_postfix(new_tensor)
 
