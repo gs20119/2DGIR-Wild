@@ -22,7 +22,6 @@ from simple_knn._C import distCUDA2
 from utils.graphics_utils import BasicPointCloud
 from utils.general_utils import strip_symmetric, build_rotation, build_scaling_rotation
 from net_modules.feature_maps_generators import *
-from net_modules.feature_maps_sample import*
 from net_modules.color_features_net import *
 
 from net_modules.feature_maps_projection import *
@@ -377,27 +376,31 @@ class GaussianModel:
         
     def forward(self, viewpoint_camera, direction=None, store_cache=True, select=None): # direction = [N,3]
 
-        img = viewpoint_camera.original_image.cuda()
+        img = viewpoint_camera.original_image.cuda() # [3, H, W]
         out_gen = self.map_generator(img.unsqueeze(0),eval_mode=self.eval_mode)
-        self._feature_maps = out_gen["feature_maps"] # [1, M*C, H, W]
-        feature_maps = self._feature_maps.reshape(self.map_num,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1]) # [M=3,C=16,271,362]
+        self._feature_maps = out_gen["feature_maps"] # [1, M*C, h, w]
+        feature_maps = self._feature_maps.reshape(self.map_num,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1]) # [M=3,C=16,h=271,w=362]
+        #feature_maps = self._feature_maps.reshape(1,-1,self._feature_maps.shape[-2],self._feature_maps.shape[-1]) # [M=3,C=16,h=271,w=362]
 
         if self.use_features_mask:
             self.features_mask = out_gen["mask"]
         box_coord_proj, box_coord_add = self.box_coord[:,-1,:], self.box_coord[:,:self.map_num-1,:] # [N,2] and [N,M-1,2]
         
         coord_proj, project_mask = project2d( # coord_proj [1, 1, N, 2]
-            self._xyz, viewpoint_camera.world_view_transform, 
-            viewpoint_camera.intrinsic_martix, box_coord_proj, feature_maps[-1,...].unsqueeze(0))
+            self._xyz, img, viewpoint_camera.world_view_transform, viewpoint_camera.intrinsic_martix)
         coord_add = box_coord_add.permute(1,0,2).unsqueeze(1)/self.coord_scale # coord_add [M-1, 1, N, 2]
         coordinates = torch.cat([coord_add, coord_proj], dim=0) # [M, 1, N, 2]
+        #coordinates = coord_proj # [1, 1, N, 2]
         self.coordinates = coordinates.squeeze().permute(1,0,2) # [N, M, 2]
+        #self.coordinates = coordinates.squeeze().unsqueeze(1) # [N, 1, 2]
 
-        point_features = F.grid_sample( # [N, M, C]
+        point_features = F.grid_sample( # [N, M, C] - [N, C]
             feature_maps, coordinates.float(), 
             mode='bilinear', padding_mode='border').permute(2,3,0,1).squeeze() 
         point_features[~project_mask,-1,:].zero_()
-        self._point_features = point_features.reshape((point_features.shape[0],-1)) # [N, M*C]    
+        #point_features[~project_mask, :].zero_()
+        self._point_features = point_features.reshape((point_features.shape[0],-1)) # [N, M*C]
+        #self._point_features = point_features    
 
         if select is not None:
             return self.color_net(self._xyz[select], self._pbr_features[select], self._point_features[select], direction,
