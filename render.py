@@ -71,10 +71,11 @@ def generate_lightmap(path, views, gaussians, pipeline, background, indices=[0])
         incident_dirs_full = sample_incident_rays_all(normal[indices], res=res_lightmap)
         incidents_full = gaussians.get_incidents(view, incident_dirs_full, indices)
         incident_maps = incidents_full.reshape(-1, res_lightmap//4, res_lightmap, 3).permute(0,3,1,2)
-        for idx_l, lightmap in zip(indices, incident_maps):
-            lightmap_path = os.path.join(lightmaps_path, f"point_{idx_l}")
-            makedirs(lightmap_path, exist_ok=True)
-            torchvision.utils.save_image(lightmap, os.path.join(lightmap_path, f"({idx_v:02d}).png"))
+        incident_maps = incident_maps.clamp(min=1e-9) ** gaussians.get_gamma # tone mapping
+        lightmap_path = os.path.join(lightmaps_path, f"scene_{idx_v:02d}")
+        makedirs(lightmap_path, exist_ok=True)
+        for idx_l, lightmap in enumerate(incident_maps): #zip(indices, incident_maps):
+            torchvision.utils.save_image(lightmap, os.path.join(lightmap_path, f"point_{idx_l}.png"))
 
 @torch.no_grad()
 def test_rendering_speed(views, gaussians, pipeline,background,use_cache=False): # don't use
@@ -163,7 +164,7 @@ if __name__ == "__main__":
         gaussExtractor.export_image(test_dir)
         render_intrinsic(test_dir, test_cameras, gaussians, pipe, background) 
     
-    indices = [36948, 51031]
+    indices = [20929, 27612, 8411, 3992, 8383, 8274, 39056, 1178, 78261, 2452, 2994, 1274, 19360, 18964]
     if not args.skip_incident and (len(indices)>0):
         print("export incident light maps ...")
         os.makedirs(train_dir, exist_ok=True)
