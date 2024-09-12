@@ -232,14 +232,10 @@ class GaussianModel:
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
                 lrs.append(lr)
-                
-            elif iteration>warm_up_iter:          
-                    param_group["lr"]=lr
-                    lrs.append(lr)
-                elif param_group["name"]=="map_generator":
-                    lr=self.map_generator_scheduler_args(iteration)
-                    param_group["lr"]=lr
-                    lrs.append(lr)
+            elif iteration>warm_up_iter and param_group["name"]=="map_generator":
+                lr=self.map_generator_scheduler_args(iteration)
+                param_group["lr"]=lr
+                lrs.append(lr)
                     
             if len(lrs)==length_update:
                 return lrs
