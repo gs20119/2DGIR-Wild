@@ -359,11 +359,13 @@ class GaussianModel:
         point_features[~project_mask, :].zero_()
         self._point_features = point_features    
 
+        view_dir = F.normalize(viewpoint_camera.camera_center - self._xyz).detach()
+
         if select is not None:
-            return self.color_net(self._xyz[select], self._pbr_features[select], self._point_features[select], direction,
+            return self.color_net(self._xyz[select], view_dir[select], self._point_features[select], direction,
                 inter_weight=self.colornet_inter_weight, store_cache=store_cache)
 
-        return self.color_net(self._xyz, self._pbr_features, self._point_features, direction,
+        return self.color_net(self._xyz, view_dir, self._point_features, direction,
             inter_weight=self.colornet_inter_weight, store_cache=store_cache)
 
     def forward_cache(self, direction, num_samples=1): 

@@ -7,7 +7,7 @@ import os
 def argument_init(args):
 
     args.map_num=args.map_num
-    args.feature_maps_dim=48
+    args.feature_maps_dim=16
     args.feature_maps_combine="cat"
     args.dynamic_features_dim = args.feature_maps_dim
 
@@ -21,6 +21,7 @@ def argument_init(args):
     args.features_weight_loss_coef=0.01
     args.color_net_params={
         "fin_dim":5, "pin_dim":3, "view_dim":3, 
+        "enc_dim":15, "dec_dim":5,
         "pfin_dim":args.dynamic_features_dim,
         "en_dims":[64,48,32], # reduced size of MLP 
         "de_dims":[24,24],
