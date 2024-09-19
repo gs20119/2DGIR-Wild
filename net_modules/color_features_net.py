@@ -42,7 +42,7 @@ class Color_net(nn.Module):
             self.embed_fns.append(None)
             
         self.encoder=lin_module(
-            view_dim+pfin_dim, enc_dim, en_dims, multires[0], 
+            fin_dim+pfin_dim, enc_dim, en_dims, multires[0], 
             act_fun=nn.ReLU(),weight_norm=weight_norm,weight_xavier=weight_xavier)
         
         self.decoder=lin_module( 
@@ -60,12 +60,12 @@ class Color_net(nn.Module):
 
                 
     def forward(self, inp, inf, inpf, direction=None, inter_weight=1.0, store_cache=False): 
-        # inp = point coordinates, inf = view direction, inpf = dynamic features
+        # inp = point coordinates, inf = view direction + pbr, inpf = dynamic features
         if self.use_drop_out: inpf = self.drop_outs[0](inpf) 
         if self.use_pencoding[0]: # encode inp if wanted
             inp = self.embed_fns[0](inp)
         if self.use_pencoding[1]: 
-            inf = self.embed_fns[1](inf) # encode cam_view direction
+            inf[:3] = self.embed_fns[1](inf[:3]) # encode cam_view direction
             if direction is not None: 
                 direction = self.embed_fns[1](direction) # encode direction if wanted
 

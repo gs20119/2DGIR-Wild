@@ -360,12 +360,15 @@ class GaussianModel:
         self._point_features = point_features    
 
         view_dir = F.normalize(viewpoint_camera.camera_center - self._xyz).detach()
+        temp = torch.cat((view_dir, 
+            self.get_base_color.detach(), self.get_roughness.detach(), self.get_metallic.detach()), 1)
+        xyz = self._xyz.detach()
 
         if select is not None:
-            return self.color_net(self._xyz[select], view_dir[select], self._point_features[select], direction,
+            return self.color_net(xyz[select], temp[select], self._point_features[select], direction,
                 inter_weight=self.colornet_inter_weight, store_cache=store_cache)
 
-        return self.color_net(self._xyz, view_dir, self._point_features, direction,
+        return self.color_net(xyz, temp, self._point_features, direction,
             inter_weight=self.colornet_inter_weight, store_cache=store_cache)
 
     def forward_cache(self, direction, num_samples=1): 

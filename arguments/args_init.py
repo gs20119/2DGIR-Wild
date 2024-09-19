@@ -20,7 +20,7 @@ def argument_init(args):
                                      
     args.features_weight_loss_coef=0.01
     args.color_net_params={
-        "fin_dim":5, "pin_dim":3, "view_dim":3, 
+        "fin_dim":3+5, "pin_dim":3, "view_dim":3, 
         "enc_dim":15, "dec_dim":5,
         "pfin_dim":args.dynamic_features_dim,
         "en_dims":[64,48,32], # reduced size of MLP 
