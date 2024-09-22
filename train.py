@@ -162,10 +162,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, debug_fr
         if args.use_lpips_loss: 
             loss += lpips_criteria(image,gt_image).mean()*args.lpips_loss_coef
 
-        # Gaussian-Wild regularization
-        if args.use_scaling_loss:
-            loss += torch.abs(gaussians.get_scaling).mean()*args.scaling_loss_coef 
-
         # 2DGS regularization 
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
